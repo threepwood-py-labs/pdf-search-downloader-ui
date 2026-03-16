@@ -1,0 +1,19 @@
+# Changes here will be overwritten by Copier.
+_src_path: "aatemplate"
+_commit: "v1.7.4"
+project_name: "pdf-search-downloader-ui"
+project_kind: "qt_app"
+package_name: "pdf_search_downloader_ui"
+description: "Windows desktop application for browser-driven PDF search and download workflows."
+author_name: "MT0z"
+author_email: "mt0z1@pir0z.yxz"
+github_username: "Threepwood-7"
+project_version: "0.1.0"
+runtime_dependencies:
+
+  - "PySide6>=6.10.2"
+
+  - "httpx>=0.28.1"
+
+  - "playwright>=1.55.0"
+
