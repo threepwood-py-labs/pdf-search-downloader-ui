@@ -211,7 +211,7 @@ class PdfDownloader:
                     browser_session,
                     candidate,
                 )
-            except ValueError:
+            except Exception:
                 return self._build_record(
                     hit,
                     candidate.download_url,

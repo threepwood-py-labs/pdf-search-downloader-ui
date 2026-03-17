@@ -8,9 +8,22 @@ from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QThread, Signal
 
-from ..browser_session import BrowserSessionManager, BrowserSessionProtocol
+from ..browser_session import (
+    BrowserDownloadTriggeredError,
+    BrowserNavigationError,
+    BrowserSessionManager,
+    BrowserSessionProtocol,
+)
 from ..config import AppConfig
-from ..models import DownloadOutcome, RunState, RunStatus, SearchRequest
+from ..html_tools import looks_like_pdf_url
+from ..models import (
+    DownloadOutcome,
+    PdfCandidate,
+    RunState,
+    RunStatus,
+    SearchHit,
+    SearchRequest,
+)
 from ..persistence.manifest import ManifestStore
 from ..providers import build_provider_map
 from ..runtime_paths import manifest_database_path, temp_download_dir
@@ -30,6 +43,7 @@ def _default_browser_factory(config: AppConfig) -> BrowserSessionProtocol:
     return BrowserSessionManager(
         config.browser.profile_dir,
         locale=config.search.default_language,
+        browser_download_dir=config.downloads.output_dir,
     )
 
 
@@ -76,10 +90,26 @@ class SearchRunWorker(QThread):
     ) -> str:
         """Load one page and block until it is ready for scraping."""
 
+        logger.info(
+            "Fetching page provider=%s url=%s",
+            provider.provider_id.value,
+            url,
+        )
         snapshot = browser_session.fetch_snapshot(url)
         while snapshot.intervention_reason is not None:
             state.status = RunStatus.WAITING
             state.interventions.append(snapshot.intervention_reason)
+            logger.info(
+                "Manual intervention required provider=%s reason=%s url=%s",
+                provider.provider_id.value,
+                snapshot.intervention_reason.value,
+                snapshot.final_url,
+            )
+            self.progress_changed.emit(
+                "Solve the "
+                f"{snapshot.intervention_reason.value} step in the "
+                f"{provider.display_name} browser window."
+            )
             self.manual_intervention_required.emit(
                 provider.provider_id.value,
                 snapshot.intervention_reason.value,
@@ -89,9 +119,58 @@ class SearchRunWorker(QThread):
                 raise RuntimeError(
                     "Search run cancelled while waiting for manual resume."
                 )
+            self.progress_changed.emit(
+                f"Rechecking {provider.display_name} after the browser step."
+            )
             snapshot = browser_session.current_snapshot()
+        logger.info(
+            "Page ready provider=%s final_url=%s title=%r",
+            provider.provider_id.value,
+            snapshot.final_url,
+            snapshot.title,
+        )
         state.status = RunStatus.RUNNING
         return snapshot.html
+
+    def _resolve_candidate_for_hit(
+        self,
+        browser_session: BrowserSessionProtocol,
+        provider: SearchProvider,
+        state: RunState,
+        hit: SearchHit,
+    ) -> PdfCandidate | None:
+        """Resolve one PDF candidate from the hit or its landing page."""
+
+        if looks_like_pdf_url(hit.url):
+            return provider.resolve_pdf_candidate(hit, "", hit.url)
+        try:
+            landing_html = self._fetch_ready_html(
+                browser_session,
+                hit.url,
+                provider,
+                state,
+            )
+        except BrowserDownloadTriggeredError:
+            logger.info(
+                "Treating browser-triggered download navigation as a PDF candidate "
+                "source_url=%s",
+                hit.url,
+            )
+            return PdfCandidate(
+                source_url=hit.url,
+                download_url=hit.url,
+                filename_hint=hit.title,
+                requires_browser_download=True,
+            )
+        except BrowserNavigationError as exc:
+            logger.info(
+                "Skipping hit because the landing page navigation failed "
+                "source_url=%s details=%s",
+                hit.url,
+                exc.details,
+            )
+            return None
+        return provider.resolve_pdf_candidate(hit, landing_html, hit.url)
 
     def run(self) -> None:
         """Execute the provider search and download workflow."""
@@ -105,12 +184,21 @@ class SearchRunWorker(QThread):
         downloads_seen = 0
 
         try:
+            logger.info(
+                "Search run started providers=%s query=%r max_pages=%s max_results=%s",
+                [provider_id.value for provider_id in self._request.providers],
+                self._request.query,
+                self._request.max_pages,
+                self._request.max_results,
+            )
             for provider_id in self._request.providers:
                 provider = provider_map[provider_id]
+                logger.info("Provider loop started provider=%s", provider_id.value)
                 for page_number in range(self._request.max_pages):
                     if self._cancelled():
                         state.status = RunStatus.CANCELLED
                         state.last_message = "Search run cancelled."
+                        logger.info("Search run cancelled before provider page load")
                         self.run_finished.emit(state)
                         return
 
@@ -130,13 +218,23 @@ class SearchRunWorker(QThread):
                         page_number=page_number,
                         max_results=max(1, self._request.max_results - downloads_seen),
                     )
+                    logger.info(
+                        "Collected hits provider=%s page=%s count=%s",
+                        provider_id.value,
+                        page_number + 1,
+                        len(hits),
+                    )
                     if not hits:
+                        logger.info(
+                            "Stopping provider pagination because no hits were found"
+                        )
                         break
 
                     for hit in hits:
                         if self._cancelled():
                             state.status = RunStatus.CANCELLED
                             state.last_message = "Search run cancelled."
+                            logger.info("Search run cancelled during hit processing")
                             self.run_finished.emit(state)
                             return
                         if downloads_seen >= self._request.max_results:
@@ -148,21 +246,17 @@ class SearchRunWorker(QThread):
                             f"Resolving PDF candidate for {hit.title}."
                         )
 
-                        landing_html = ""
-                        landing_url = hit.url
-                        if not hit.url.lower().endswith(".pdf"):
-                            landing_html = self._fetch_ready_html(
-                                browser_session,
-                                hit.url,
-                                provider,
-                                state,
-                            )
-                        candidate = provider.resolve_pdf_candidate(
+                        candidate = self._resolve_candidate_for_hit(
+                            browser_session,
+                            provider,
+                            state,
                             hit,
-                            landing_html,
-                            landing_url,
                         )
                         if candidate is None:
+                            logger.info(
+                                "No PDF candidate resolved source_url=%s",
+                                hit.url,
+                            )
                             continue
 
                         record = downloader.download_candidate(
@@ -180,6 +274,14 @@ class SearchRunWorker(QThread):
                             state.duplicates_skipped += 1
                         else:
                             state.failures += 1
+                        logger.info(
+                            "Download outcome provider=%s "
+                            "source_url=%s outcome=%s final_url=%s",
+                            hit.provider_id.value,
+                            hit.url,
+                            record.outcome.value,
+                            record.final_url,
+                        )
 
                     if downloads_seen >= self._request.max_results:
                         break
@@ -189,6 +291,12 @@ class SearchRunWorker(QThread):
                 "Completed search run."
                 if state.failures == 0
                 else "Completed search run with failures."
+            )
+            logger.info(
+                "Search run completed downloads=%s skipped=%s failures=%s",
+                state.downloads_completed,
+                state.duplicates_skipped,
+                state.failures,
             )
             self.run_finished.emit(state)
         except Exception as exc:  # pragma: no cover - defensive worker boundary
