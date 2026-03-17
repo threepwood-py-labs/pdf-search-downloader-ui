@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 
 import httpx
 
+from pdf_search_downloader_ui.browser_session import BrowserHttpRequestState
 from pdf_search_downloader_ui.models import (
     DownloadOutcome,
     DownloadRecord,
@@ -121,8 +122,12 @@ def test_pdf_downloader_returns_failed_record_when_browser_fallback_errors(
         filename_hint="report.pdf",
     )
 
-    def raise_http_error(candidate: PdfCandidate) -> tuple[Path, str]:
-        del candidate
+    def raise_http_error(
+        candidate: PdfCandidate,
+        *,
+        browser_session=None,
+    ) -> tuple[Path, str]:
+        del candidate, browser_session
         request = httpx.Request("GET", "https://example.com/report.pdf")
         response = httpx.Response(403, request=request)
         raise httpx.HTTPStatusError(
@@ -145,3 +150,94 @@ def test_pdf_downloader_returns_failed_record_when_browser_fallback_errors(
     assert result.outcome is DownloadOutcome.FAILED
     assert result.output_path is None
     assert "browser fallback" in result.message.lower()
+
+
+def test_pdf_downloader_http_download_uses_browser_like_request_state(
+    tmp_path: Path,
+) -> None:
+    class FakeBrowserSession:
+        """Provide browser-like request state for the HTTP download path."""
+
+        def http_request_state(
+            self,
+            url: str,
+            *,
+            referer: str | None = None,
+        ) -> BrowserHttpRequestState:
+            assert url == "https://example.com/report.pdf"
+            assert referer == "https://example.com/result"
+            return BrowserHttpRequestState(
+                headers={
+                    "Accept": "application/pdf,*/*;q=0.8",
+                    "Referer": "https://example.com/result",
+                    "User-Agent": "Browser UA",
+                },
+                cookies={"sessionid": "abc123"},
+            )
+
+    class FakeResponse:
+        """Provide the subset of the httpx response interface used here."""
+
+        def __init__(self) -> None:
+            self.headers = {"content-type": "application/pdf"}
+            self.url = "https://example.com/report.pdf"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> bool:
+            del exc_type, exc, tb
+            return False
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def iter_bytes(self) -> list[bytes]:
+            return [b"%PDF-1.7 browser-like"]
+
+    class FakeClient:
+        """Provide the subset of the httpx client interface used here."""
+
+        def __init__(self) -> None:
+            self.recorded_headers: dict[str, str] | None = None
+            self.recorded_cookies: dict[str, str] | None = None
+
+        def stream(
+            self,
+            method: str,
+            url: str,
+            *,
+            headers: dict[str, str],
+            cookies: dict[str, str],
+        ) -> FakeResponse:
+            assert method == "GET"
+            assert url == "https://example.com/report.pdf"
+            self.recorded_headers = headers
+            self.recorded_cookies = cookies
+            return FakeResponse()
+
+        def close(self) -> None:
+            return None
+
+    store = ManifestStore(tmp_path / "manifest.sqlite3")
+    downloader = PdfDownloader(store, temp_dir=tmp_path / "temp")
+    fake_client = FakeClient()
+    downloader._client = fake_client
+    candidate = PdfCandidate(
+        source_url="https://example.com/result",
+        download_url="https://example.com/report.pdf",
+        filename_hint="report.pdf",
+    )
+
+    temp_path, final_url = downloader._download_via_http(
+        candidate,
+        browser_session=FakeBrowserSession(),
+    )
+    downloader.close()
+
+    assert fake_client.recorded_headers is not None
+    assert fake_client.recorded_headers["User-Agent"] == "Browser UA"
+    assert fake_client.recorded_headers["Referer"] == "https://example.com/result"
+    assert fake_client.recorded_cookies == {"sessionid": "abc123"}
+    assert final_url == "https://example.com/report.pdf"
+    assert temp_path.read_bytes().startswith(b"%PDF-")

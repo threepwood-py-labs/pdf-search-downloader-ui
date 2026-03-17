@@ -21,7 +21,13 @@ from .models import BrowserPageSnapshot, ManualInterventionReason
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from playwright.sync_api import BrowserContext, Download, Page, Playwright, Response
+    from playwright.sync_api import (
+        BrowserContext,
+        Download,
+        Page,
+        Playwright,
+        Response,
+    )
 
 
 logger = logging.getLogger(__name__)
@@ -37,6 +43,21 @@ _DOWNLOAD_EVENT_TIMEOUT_MS = 5_000
 _CHROMIUM_PROFILE_DIR_NAME = "Default"
 _CHROMIUM_PREFERENCES_FILE_NAME = "Preferences"
 _CHROMIUM_LOCAL_STATE_FILE_NAME = "Local State"
+_FALLBACK_BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/145.0.0.0 Safari/537.36"
+)
+
+
+class BrowserHttpRequestState:
+    """Describe browser-like request headers and cookies for one URL."""
+
+    __slots__ = ("cookies", "headers")
+
+    def __init__(self, headers: dict[str, str], cookies: dict[str, str]) -> None:
+        self.headers = headers
+        self.cookies = cookies
 
 
 class BrowserSessionProtocol(Protocol):
@@ -69,6 +90,16 @@ class BrowserSessionProtocol(Protocol):
 
     def download_file(self, url: str, destination_dir: Path) -> Path | None:
         """Attempt to capture a browser-managed download."""
+
+        ...
+
+    def http_request_state(
+        self,
+        url: str,
+        *,
+        referer: str | None = None,
+    ) -> BrowserHttpRequestState:
+        """Build browser-like headers and cookies for one HTTP request."""
 
         ...
 
@@ -226,6 +257,33 @@ def _inline_pdf_filename(response: Response | None, fallback_url: str) -> str:
     if fallback_path_name:
         return unquote(fallback_path_name)
     return "download.pdf"
+
+
+def _accept_language_header(locale: str) -> str:
+    """Build one browser-like Accept-Language header from the app locale."""
+
+    normalized_locale = locale.replace("_", "-").strip()
+    if not normalized_locale:
+        return "en-US,en;q=0.9"
+    language = normalized_locale.split("-", maxsplit=1)[0]
+    if language == normalized_locale:
+        return f"{language},{language};q=0.9,en-US;q=0.8,en;q=0.7"
+    return f"{normalized_locale},{language};q=0.9,en-US;q=0.8,en;q=0.7"
+
+
+def _sec_fetch_site_value(url: str, referer: str | None) -> str:
+    """Build one browser-like Sec-Fetch-Site value."""
+
+    if not referer:
+        return "none"
+    target_parts = urlparse(url)
+    referer_parts = urlparse(referer)
+    if (
+        target_parts.scheme == referer_parts.scheme
+        and target_parts.netloc.lower() == referer_parts.netloc.lower()
+    ):
+        return "same-origin"
+    return "cross-site"
 
 
 def _installed_ublock_version(extension_dir: Path) -> str | None:
@@ -397,6 +455,7 @@ class BrowserSessionManager(BrowserSessionProtocol):
         self._playwright: Playwright | None = None
         self._context: BrowserContext | None = None
         self._page: Page | None = None
+        self._browser_user_agent: str | None = None
         self._last_snapshot = BrowserPageSnapshot(
             requested_url="",
             final_url="",
@@ -442,6 +501,34 @@ class BrowserSessionManager(BrowserSessionProtocol):
         )
         pages = self._context.pages
         self._page = pages[0] if pages else self._context.new_page()
+
+    def _browser_like_user_agent(self) -> str:
+        """Return the browser user agent used by the persistent context."""
+
+        if self._browser_user_agent is not None:
+            return self._browser_user_agent
+        page = self._active_page()
+        raw_user_agent: object = page.evaluate("() => navigator.userAgent")
+        if isinstance(raw_user_agent, str) and raw_user_agent.strip():
+            self._browser_user_agent = raw_user_agent.strip()
+        else:
+            self._browser_user_agent = _FALLBACK_BROWSER_USER_AGENT
+        return self._browser_user_agent
+
+    def _cookies_for_url(self, url: str) -> dict[str, str]:
+        """Return browser cookies that apply to one target URL."""
+
+        self._ensure_ready()
+        if self._context is None:  # pragma: no cover - defensive invariant
+            raise RuntimeError("Browser context is unavailable.")
+        cookies = self._context.cookies(urls=[url])
+        normalized_cookies: dict[str, str] = {}
+        for cookie in cookies:
+            name = cookie.get("name")
+            value = cookie.get("value")
+            if isinstance(name, str) and isinstance(value, str):
+                normalized_cookies[name] = value
+        return normalized_cookies
 
     def _active_page(self) -> Page:
         """Return the current active page after ensuring the context exists."""
@@ -654,6 +741,33 @@ class BrowserSessionManager(BrowserSessionProtocol):
             logger.info("Saved inline PDF browser response to %s", target_path)
             return target_path
 
+    def http_request_state(
+        self,
+        url: str,
+        *,
+        referer: str | None = None,
+    ) -> BrowserHttpRequestState:
+        """Build browser-like headers and cookies for one HTTP request."""
+
+        headers = {
+            "User-Agent": self._browser_like_user_agent(),
+            "Accept": (
+                "text/html,application/xhtml+xml,application/xml;q=0.9,"
+                "image/avif,image/webp,image/apng,*/*;q=0.8,"
+                "application/signed-exchange;v=b3;q=0.7"
+            ),
+            "Accept-Language": _accept_language_header(self._locale),
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": _sec_fetch_site_value(url, referer),
+            "Upgrade-Insecure-Requests": "1",
+        }
+        if referer:
+            headers["Referer"] = referer
+        return BrowserHttpRequestState(headers, self._cookies_for_url(url))
+
     def close(self) -> None:
         """Close the Playwright context and stop the runtime."""
 
@@ -666,3 +780,4 @@ class BrowserSessionManager(BrowserSessionProtocol):
             logger.info("Stopping Playwright runtime")
             self._playwright.stop()
             self._playwright = None
+        self._browser_user_agent = None

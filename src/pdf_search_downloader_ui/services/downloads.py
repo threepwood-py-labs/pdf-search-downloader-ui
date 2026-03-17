@@ -71,7 +71,13 @@ class PdfDownloader:
         self._client = httpx.Client(
             follow_redirects=True,
             timeout=timeout_seconds,
-            headers={"User-Agent": "pdf-search-downloader-ui/0.1.0"},
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/145.0.0.0 Safari/537.36"
+                )
+            },
         )
 
     def close(self) -> None:
@@ -79,10 +85,51 @@ class PdfDownloader:
 
         self._client.close()
 
-    def _download_via_http(self, candidate: PdfCandidate) -> tuple[Path, str]:
+    def _download_via_http(
+        self,
+        candidate: PdfCandidate,
+        *,
+        browser_session: BrowserSessionProtocol | None = None,
+    ) -> tuple[Path, str]:
         """Download one PDF candidate through HTTP."""
 
-        with self._client.stream("GET", candidate.download_url) as response:
+        referer = (
+            candidate.source_url
+            if candidate.source_url != candidate.download_url
+            else None
+        )
+        request_headers: dict[str, str] = {}
+        request_cookies: dict[str, str] = {}
+        if browser_session is not None:
+            browser_request_state = browser_session.http_request_state(
+                candidate.download_url,
+                referer=referer,
+            )
+            request_headers = browser_request_state.headers
+            request_cookies = browser_request_state.cookies
+        else:
+            request_headers = {
+                "Accept": (
+                    "text/html,application/xhtml+xml,application/xml;q=0.9,"
+                    "image/avif,image/webp,image/apng,*/*;q=0.8,"
+                    "application/signed-exchange;v=b3;q=0.7"
+                ),
+                "Accept-Language": "en-US,en;q=0.9",
+                "Cache-Control": "no-cache",
+                "Pragma": "no-cache",
+                "Sec-Fetch-Dest": "document",
+                "Sec-Fetch-Mode": "navigate",
+                "Sec-Fetch-Site": "none",
+                "Upgrade-Insecure-Requests": "1",
+            }
+            if referer is not None:
+                request_headers["Referer"] = referer
+        with self._client.stream(
+            "GET",
+            candidate.download_url,
+            headers=request_headers,
+            cookies=request_cookies,
+        ) as response:
             response.raise_for_status()
             with tempfile.NamedTemporaryFile(
                 suffix=".pdf",
@@ -196,7 +243,10 @@ class PdfDownloader:
             )
 
         try:
-            temp_path, final_url = self._download_via_http(candidate)
+            temp_path, final_url = self._download_via_http(
+                candidate,
+                browser_session=browser_session,
+            )
         except (httpx.HTTPError, ValueError):
             if browser_session is None:
                 return self._build_record(
