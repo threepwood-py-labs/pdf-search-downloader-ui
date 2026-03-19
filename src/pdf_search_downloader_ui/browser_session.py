@@ -17,6 +17,7 @@ import httpx
 
 from .html_tools import looks_like_pdf_url
 from .models import BrowserPageSnapshot, ManualInterventionReason
+from .window_layout import preferred_split_screen_layout
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -271,6 +272,41 @@ def _accept_language_header(locale: str) -> str:
     return f"{normalized_locale},{language};q=0.9,en-US;q=0.8,en;q=0.7"
 
 
+def _navigator_languages(locale: str) -> tuple[str, ...]:
+    """Build one browser-like ``navigator.languages`` sequence."""
+
+    normalized_locale = locale.replace("_", "-").strip()
+    if not normalized_locale:
+        return ("en-US", "en")
+    language = normalized_locale.split("-", maxsplit=1)[0]
+    values: list[str] = [normalized_locale]
+    if language != normalized_locale:
+        values.append(language)
+    values.extend(("en-US", "en"))
+    return tuple(dict.fromkeys(values))
+
+
+def _stealth_init_script(locale: str) -> str:
+    """Build the stealth init script for one configured locale."""
+
+    navigator_languages = json.dumps(
+        _navigator_languages(locale),
+        ensure_ascii=True,
+    )
+    return f"""
+Object.defineProperty(navigator, 'webdriver', {{
+  get: () => undefined,
+}});
+Object.defineProperty(navigator, 'languages', {{
+  get: () => {navigator_languages},
+}});
+Object.defineProperty(navigator, 'plugins', {{
+  get: () => [1, 2, 3, 4, 5],
+}});
+window.chrome = window.chrome || {{ runtime: {{}} }};
+"""
+
+
 def _sec_fetch_site_value(url: str, referer: str | None) -> str:
     """Build one browser-like Sec-Fetch-Site value."""
 
@@ -479,6 +515,7 @@ class BrowserSessionManager(BrowserSessionProtocol):
         self._profile_dir.mkdir(parents=True, exist_ok=True)
         self._browser_download_dir.mkdir(parents=True, exist_ok=True)
         extension_dir = ensure_ublock_origin_extension(self._profile_dir)
+        browser_window_bounds = preferred_split_screen_layout().left
         _ensure_chromium_profile_settings(
             self._profile_dir,
             browser_download_dir=self._browser_download_dir,
@@ -491,14 +528,23 @@ class BrowserSessionManager(BrowserSessionProtocol):
             headless=False,
             accept_downloads=True,
             locale=self._locale,
+            user_agent=_FALLBACK_BROWSER_USER_AGENT,
+            ignore_default_args=["--enable-automation"],
             args=[
                 f"--disable-extensions-except={extension_dir}",
                 f"--load-extension={extension_dir}",
+                "--new-window",
+                "--disable-blink-features=AutomationControlled",
                 "--hide-crash-restore-bubble",
                 "--disable-session-crashed-bubble",
                 "--disable-features=TranslateUI",
+                "--window-position="
+                f"{browser_window_bounds.left},{browser_window_bounds.top}",
+                "--window-size="
+                f"{browser_window_bounds.width},{browser_window_bounds.height}",
             ],
         )
+        self._context.add_init_script(_stealth_init_script(self._locale))
         pages = self._context.pages
         self._page = pages[0] if pages else self._context.new_page()
 

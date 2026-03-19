@@ -12,6 +12,10 @@ from .config import ensure_config_exists, load_config, save_config
 from .constants import APP_DISPLAY_NAME, APP_IDENTITY
 from .runtime_paths import app_data_dir
 from .ui import MainWindow, run_setup_wizard
+from .window_layout import (
+    preferred_split_screen_layout,
+    set_preferred_split_screen_layout,
+)
 
 
 def build_application(argv: list[str] | None = None) -> QApplication:
@@ -45,5 +49,8 @@ def run_app(argv: list[str] | None = None) -> int:
         config = configured
 
     window = MainWindow(config)
+    split_layout = preferred_split_screen_layout()
+    set_preferred_split_screen_layout(split_layout)
+    window.setGeometry(split_layout.right.to_qrect())
     window.show()
     return app.exec()

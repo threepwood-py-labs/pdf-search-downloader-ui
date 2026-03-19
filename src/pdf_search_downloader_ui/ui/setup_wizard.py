@@ -29,7 +29,9 @@ from ..config import (
     ProviderConfig,
     SearchConfig,
 )
+from ..locale_options import locale_option_for_label
 from ..widget_naming import control_widget_id, window_widget_id
+from .locale_combo import build_locale_combo
 
 
 class SetupWizardDialog(QDialog):
@@ -54,8 +56,11 @@ class SetupWizardDialog(QDialog):
         self.chk_bing = QCheckBox("Enable Bing scraping")
         self.chk_bing.setChecked(initial.providers.bing_enabled)
 
-        self.txt_language = QLineEdit(initial.search.default_language)
-        self.txt_market = QLineEdit(initial.search.default_market)
+        self.cmb_locale = build_locale_combo(
+            self,
+            current_language=initial.search.default_language,
+            current_market=initial.search.default_market,
+        )
         self.spn_pages = QSpinBox()
         self.spn_pages.setRange(1, 10)
         self.spn_pages.setValue(initial.search.max_pages)
@@ -81,8 +86,7 @@ class SetupWizardDialog(QDialog):
 
         form.addRow("Google", self.chk_google)
         form.addRow("Bing", self.chk_bing)
-        form.addRow("Default language", self.txt_language)
-        form.addRow("Default market", self.txt_market)
+        form.addRow("Default locale", self.cmb_locale)
         form.addRow("Max pages", self.spn_pages)
         form.addRow("Max results", self.spn_results)
         form.addRow("Output directory", output_row)
@@ -164,6 +168,7 @@ class SetupWizardDialog(QDialog):
     def to_config(self) -> AppConfig:
         """Convert the current dialog state into one persisted config."""
 
+        locale_option = locale_option_for_label(self.cmb_locale.currentText())
         return replace(
             self._initial,
             providers=ProviderConfig(
@@ -171,8 +176,8 @@ class SetupWizardDialog(QDialog):
                 bing_enabled=self.chk_bing.isChecked(),
             ),
             search=SearchConfig(
-                default_language=self.txt_language.text().strip() or "it",
-                default_market=self.txt_market.text().strip() or "it",
+                default_language=locale_option.language,
+                default_market=locale_option.market,
                 max_pages=int(self.spn_pages.value()),
                 max_results=int(self.spn_results.value()),
             ),

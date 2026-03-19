@@ -10,10 +10,12 @@ from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from pdf_search_downloader_ui.browser_session import (
+    _FALLBACK_BROWSER_USER_AGENT,
     BrowserDownloadTriggeredError,
     BrowserNavigationError,
     BrowserSessionManager,
     _ensure_chromium_profile_settings,
+    _stealth_init_script,
     detect_manual_intervention,
     ensure_ublock_origin_extension,
 )
@@ -33,8 +35,10 @@ def test_google_provider_build_url_forces_pdf_query() -> None:
 
     url = GoogleProvider().build_search_url(request, 2)
 
+    assert url.startswith("https://www.google.it/search")
     assert "filetype%3Apdf" in url
     assert "hl=it" in url
+    assert "gl=it" in url
     assert "start=20" in url
 
 
@@ -43,6 +47,7 @@ def test_bing_provider_build_url_uses_language_and_market() -> None:
 
     url = BingProvider().build_search_url(request, 1)
 
+    assert url.startswith("https://www.bing.com/search")
     assert "setlang=it" in url
     assert "cc=IT" in url
     assert "first=11" in url
@@ -322,6 +327,91 @@ def test_browser_session_fetch_snapshot_opens_a_fresh_tab(
     ]
     assert fake_context.created_pages[1].brought_to_front is True
     assert session._page is fake_context.created_pages[1]
+
+
+def test_browser_session_launches_persistent_context_with_stealth_settings(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    class FakePage:
+        """Provide the subset of the Playwright page interface used here."""
+
+        def is_closed(self) -> bool:
+            return False
+
+    class FakeContext:
+        """Capture context configuration applied during session startup."""
+
+        def __init__(self) -> None:
+            self.pages = [FakePage()]
+            self.init_scripts: list[str] = []
+
+        def add_init_script(self, script: str) -> None:
+            self.init_scripts.append(script)
+
+    class FakeChromium:
+        """Capture Chromium launch options for the browser session."""
+
+        def __init__(self) -> None:
+            self.launch_kwargs: dict[str, object] = {}
+            self.context = FakeContext()
+
+        def launch_persistent_context(
+            self,
+            *,
+            user_data_dir: str,
+            **kwargs: object,
+        ) -> FakeContext:
+            self.launch_kwargs = {"user_data_dir": user_data_dir, **kwargs}
+            return self.context
+
+    class FakePlaywright:
+        """Expose the Chromium launcher consumed by the session."""
+
+        def __init__(self) -> None:
+            self.chromium = FakeChromium()
+
+        def stop(self) -> None:
+            return None
+
+    class FakeSyncPlaywright:
+        """Stand in for ``playwright.sync_api.sync_playwright``."""
+
+        def __init__(self) -> None:
+            self.playwright = FakePlaywright()
+
+        def start(self) -> FakePlaywright:
+            return self.playwright
+
+    monkeypatch.setattr(
+        "pdf_search_downloader_ui.browser_session.ensure_ublock_origin_extension",
+        lambda _profile_dir: tmp_path / "extension",
+    )
+    monkeypatch.setattr(
+        "pdf_search_downloader_ui.browser_session._ensure_chromium_profile_settings",
+        lambda _profile_dir, *, browser_download_dir: None,
+    )
+    fake_sync_playwright = FakeSyncPlaywright()
+    monkeypatch.setattr(
+        "playwright.sync_api.sync_playwright",
+        lambda: fake_sync_playwright,
+    )
+    session = BrowserSessionManager(
+        tmp_path / "profile",
+        locale="it",
+        browser_download_dir=tmp_path / "downloads",
+    )
+
+    session._ensure_ready()
+
+    launch_kwargs = fake_sync_playwright.playwright.chromium.launch_kwargs
+    assert launch_kwargs["user_data_dir"] == str(tmp_path / "profile")
+    assert launch_kwargs["user_agent"] == _FALLBACK_BROWSER_USER_AGENT
+    assert launch_kwargs["ignore_default_args"] == ["--enable-automation"]
+    assert "--disable-blink-features=AutomationControlled" in launch_kwargs["args"]
+    assert fake_sync_playwright.playwright.chromium.context.init_scripts == [
+        _stealth_init_script("it")
+    ]
 
 
 def test_browser_session_fetch_snapshot_raises_when_navigation_starts_download(

@@ -36,9 +36,15 @@ from ..config import (
     set_last_query,
 )
 from ..constants import APP_DISPLAY_NAME
+from ..locale_options import locale_option_for_codes, locale_option_for_label
 from ..models import DownloadRecord, RunState, RunStatus, SearchHit
 from ..widget_naming import control_widget_id, table_widget_id, window_widget_id
+from ..window_layout import (
+    set_preferred_split_screen_layout,
+    split_screen_layout_for_widget,
+)
 from ..workers.search_worker import SearchRunWorker
+from .locale_combo import build_locale_combo
 from .setup_wizard import run_setup_wizard
 
 if TYPE_CHECKING:
@@ -83,8 +89,11 @@ class MainWindow(QMainWindow):
         provider_row.addWidget(self.bing_checkbox)
         provider_row.addStretch(1)
 
-        self.language_edit = QLineEdit(self)
-        self.market_edit = QLineEdit(self)
+        self.locale_combo = build_locale_combo(
+            self,
+            current_language=self._config.search.default_language,
+            current_market=self._config.search.default_market,
+        )
         self.max_pages_spin = QSpinBox(self)
         self.max_pages_spin.setRange(1, 10)
         self.max_results_spin = QSpinBox(self)
@@ -98,8 +107,7 @@ class MainWindow(QMainWindow):
 
         form.addRow("Query", self.query_edit)
         form.addRow("Providers", provider_row)
-        form.addRow("Language", self.language_edit)
-        form.addRow("Market", self.market_edit)
+        form.addRow("Locale", self.locale_combo)
         form.addRow("Max pages", self.max_pages_spin)
         form.addRow("Max results", self.max_results_spin)
         form.addRow("Output directory", output_row)
@@ -188,8 +196,11 @@ class MainWindow(QMainWindow):
 
         self.google_checkbox.setChecked(config.providers.google_enabled)
         self.bing_checkbox.setChecked(config.providers.bing_enabled)
-        self.language_edit.setText(config.search.default_language)
-        self.market_edit.setText(config.search.default_market)
+        locale_option = locale_option_for_codes(
+            config.search.default_language,
+            config.search.default_market,
+        )
+        self.locale_combo.setCurrentText(locale_option.label)
         self.max_pages_spin.setValue(config.search.max_pages)
         self.max_results_spin.setValue(config.search.max_results)
         self.output_dir_edit.setText(str(config.downloads.output_dir))
@@ -197,6 +208,7 @@ class MainWindow(QMainWindow):
     def _config_from_controls(self) -> AppConfig:
         """Build one config object from the current widget values."""
 
+        locale_option = locale_option_for_label(self.locale_combo.currentText())
         return replace(
             self._config,
             providers=replace(
@@ -206,8 +218,8 @@ class MainWindow(QMainWindow):
             ),
             search=replace(
                 self._config.search,
-                default_language=self.language_edit.text().strip() or "it",
-                default_market=self.market_edit.text().strip() or "it",
+                default_language=locale_option.language,
+                default_market=locale_option.market,
                 max_pages=int(self.max_pages_spin.value()),
                 max_results=int(self.max_results_spin.value()),
             ),
@@ -296,6 +308,7 @@ class MainWindow(QMainWindow):
         set_last_query(query)
         self.results_table.setRowCount(0)
         self._row_for_source_url.clear()
+        set_preferred_split_screen_layout(split_screen_layout_for_widget(self))
 
         request = config.build_request(query)
         self._worker = self._worker_factory(request, config)

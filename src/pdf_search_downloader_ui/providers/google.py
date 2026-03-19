@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from ..locale_options import locale_option_for_codes
 from ..models import ProviderId, SearchRequest
 from .base import ProviderBase, unwrap_google_result_url
 
@@ -17,8 +18,9 @@ class GoogleProvider(ProviderBase):
         """Build one Google search URL using the configured locale."""
 
         start_index = page_number * 10
+        locale_option = locale_option_for_codes(request.language, request.market)
         return (
-            "https://www.google.com/search"
+            f"https://{locale_option.google_host}/search"
             f"?hl={request.language}"
             f"&gl={request.market}"
             "&num=10"

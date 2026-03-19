@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 from urllib.parse import parse_qs, urlparse
 
+from ..locale_options import locale_option_for_codes
 from ..models import ProviderId, SearchRequest
 from .base import ProviderBase
 
@@ -51,14 +52,15 @@ class BingProvider(ProviderBase):
 
     provider_id = ProviderId.BING
     display_name = "Bing"
-    _internal_domains = ("bing.com", "microsoft.com")
+    _internal_domains = ("bing.", "microsoft.com")
 
     def build_search_url(self, request: SearchRequest, page_number: int) -> str:
         """Build one Bing search URL using the configured locale."""
 
         first_result = (page_number * 10) + 1
+        locale_option = locale_option_for_codes(request.language, request.market)
         return (
-            "https://www.bing.com/search"
+            f"https://{locale_option.bing_host}/search"
             f"?setlang={request.language}"
             f"&cc={request.market.upper()}"
             "&count=10"

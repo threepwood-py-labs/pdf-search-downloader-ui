@@ -3,6 +3,7 @@ from __future__ import annotations
 from PySide6.QtCore import QObject, Signal
 
 from pdf_search_downloader_ui.config import get_default_config
+from pdf_search_downloader_ui.locale_options import COMMON_LOCALE_LABELS
 from pdf_search_downloader_ui.models import (
     DownloadOutcome,
     DownloadRecord,
@@ -118,3 +119,22 @@ def test_main_window_manual_intervention_enables_resume(window) -> None:
 
     assert window.resume_button.isEnabled() is True
     assert "manual captcha" in window.status_label.text().lower()
+
+
+def test_main_window_locale_combo_uses_common_defaults(window) -> None:
+    combo_items = [
+        window.locale_combo.itemText(index)
+        for index in range(window.locale_combo.count())
+    ]
+
+    assert window.locale_combo.currentText() == "Italian"
+    assert combo_items == list(COMMON_LOCALE_LABELS)
+
+
+def test_main_window_locale_combo_drives_language_and_market(window) -> None:
+    window.locale_combo.setCurrentText("English (US)")
+
+    config = window._config_from_controls()
+
+    assert config.search.default_language == "en-US"
+    assert config.search.default_market == "us"
