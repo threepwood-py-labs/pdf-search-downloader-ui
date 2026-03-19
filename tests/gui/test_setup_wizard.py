@@ -35,6 +35,7 @@ def test_setup_wizard_to_config_sets_setup_completed(qtbot) -> None:
     assert config.setup_completed is True
     assert config.downloads.output_dir == Path("C:/tmp/downloads")
     assert config.browser.profile_dir == Path("C:/tmp/profile")
+    assert config.downloads.timeout_seconds == 20
     assert config.search.default_language == "it"
     assert config.search.default_market == "it"
 
@@ -62,3 +63,15 @@ def test_setup_wizard_locale_combo_drives_language_and_market(qtbot) -> None:
 
     assert config.search.default_language == "de"
     assert config.search.default_market == "de"
+
+
+def test_setup_wizard_timeout_spinner_drives_download_timeout(qtbot) -> None:
+    dialog = SetupWizardDialog(get_default_config())
+    qtbot.addWidget(dialog)
+    dialog.spn_download_timeout.setValue(17)
+    dialog.txt_output_dir.setText("C:/tmp/downloads")
+    dialog.txt_profile_dir.setText("C:/tmp/profile")
+
+    config = dialog.to_config()
+
+    assert config.downloads.timeout_seconds == 17

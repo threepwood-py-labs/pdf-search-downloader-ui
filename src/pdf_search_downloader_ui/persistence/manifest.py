@@ -113,3 +113,10 @@ class ManifestStore:
                     record.message,
                 ),
             )
+
+    def clear(self) -> None:
+        """Delete all persisted download records from the manifest."""
+
+        self.initialize()
+        with sqlite3.connect(self.database_path) as connection:
+            connection.execute("DELETE FROM downloads")

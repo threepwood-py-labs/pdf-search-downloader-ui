@@ -6,8 +6,8 @@ from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QUrl
-from PySide6.QtGui import QAction, QCloseEvent, QDesktopServices
+from PySide6.QtCore import QByteArray, QSettings, QUrl
+from PySide6.QtGui import QAction, QBrush, QCloseEvent, QColor, QDesktopServices
 from PySide6.QtWidgets import (
     QCheckBox,
     QFileDialog,
@@ -37,7 +37,9 @@ from ..config import (
 )
 from ..constants import APP_DISPLAY_NAME
 from ..locale_options import locale_option_for_codes, locale_option_for_label
-from ..models import DownloadRecord, RunState, RunStatus, SearchHit
+from ..models import DownloadOutcome, DownloadRecord, RunState, RunStatus, SearchHit
+from ..persistence.manifest import ManifestStore
+from ..runtime_paths import manifest_database_path
 from ..widget_naming import control_widget_id, table_widget_id, window_widget_id
 from ..window_layout import (
     set_preferred_split_screen_layout,
@@ -49,6 +51,8 @@ from .setup_wizard import run_setup_wizard
 
 if TYPE_CHECKING:
     type WorkerFactory = type[SearchRunWorker]
+
+_WINDOW_GEOMETRY_KEY = "ui/main_window/geometry"
 
 
 class MainWindow(QMainWindow):
@@ -67,9 +71,11 @@ class MainWindow(QMainWindow):
         self._worker: SearchRunWorker | None = None
         self._worker_factory = worker_factory
         self._row_for_source_url: dict[str, int] = {}
+        self._has_saved_geometry = False
         self._build_ui()
         self._load_config_into_controls(config)
         self._build_menu()
+        self._restore_window_geometry()
         self.query_edit.setText(last_query())
 
     def _build_ui(self) -> None:
@@ -98,6 +104,9 @@ class MainWindow(QMainWindow):
         self.max_pages_spin.setRange(1, 10)
         self.max_results_spin = QSpinBox(self)
         self.max_results_spin.setRange(1, 200)
+        self.download_timeout_spin = QSpinBox(self)
+        self.download_timeout_spin.setRange(5, 120)
+        self.download_timeout_spin.setSuffix(" sec")
         self.output_dir_edit = QLineEdit(self)
         self.output_dir_button = QPushButton("Browse...", self)
         self.output_dir_button.clicked.connect(self._browse_output_dir)
@@ -110,6 +119,7 @@ class MainWindow(QMainWindow):
         form.addRow("Locale", self.locale_combo)
         form.addRow("Max pages", self.max_pages_spin)
         form.addRow("Max results", self.max_results_spin)
+        form.addRow("Download timeout", self.download_timeout_spin)
         form.addRow("Output directory", output_row)
         root.addLayout(form)
 
@@ -141,13 +151,13 @@ class MainWindow(QMainWindow):
 
         self.results_table = QTableWidget(0, 5, self)
         self.results_table.setHorizontalHeaderLabels(
-            ["Provider", "Title", "Source", "Status", "Output"]
+            ["Provider", "Title", "Status", "Source", "Output"]
         )
-        self.results_table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.Stretch
-        )
+        results_header = self.results_table.horizontalHeader()
+        results_header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self.results_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         root.addWidget(self.results_table, stretch=1)
+        self.fit_results_columns()
 
         assign_widget_identity(
             self,
@@ -187,9 +197,19 @@ class MainWindow(QMainWindow):
         open_ini_action.triggered.connect(self._open_settings_ini)
         file_menu.addAction(open_ini_action)
 
+        clear_manifest_action = QAction("Clear Manifest", self)
+        clear_manifest_action.triggered.connect(self.clear_manifest)
+        file_menu.addAction(clear_manifest_action)
+
         exit_action = QAction("Exit", self)
+        exit_action.setShortcut("Alt+X")
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
+
+        view_menu = self.menuBar().addMenu("&View")
+        fit_columns_action = QAction("Fit Columns", self)
+        fit_columns_action.triggered.connect(self.fit_results_columns)
+        view_menu.addAction(fit_columns_action)
 
     def _load_config_into_controls(self, config: AppConfig) -> None:
         """Reflect one config object into the visible controls."""
@@ -203,6 +223,7 @@ class MainWindow(QMainWindow):
         self.locale_combo.setCurrentText(locale_option.label)
         self.max_pages_spin.setValue(config.search.max_pages)
         self.max_results_spin.setValue(config.search.max_results)
+        self.download_timeout_spin.setValue(config.downloads.timeout_seconds)
         self.output_dir_edit.setText(str(config.downloads.output_dir))
 
     def _config_from_controls(self) -> AppConfig:
@@ -226,6 +247,7 @@ class MainWindow(QMainWindow):
             downloads=replace(
                 self._config.downloads,
                 output_dir=Path(self.output_dir_edit.text().strip()),
+                timeout_seconds=int(self.download_timeout_spin.value()),
             ),
         )
 
@@ -247,10 +269,12 @@ class MainWindow(QMainWindow):
         self.results_table.insertRow(row)
         self.results_table.setItem(row, 0, QTableWidgetItem(hit.provider_id.value))
         self.results_table.setItem(row, 1, QTableWidgetItem(hit.title))
-        self.results_table.setItem(row, 2, QTableWidgetItem(hit.url))
-        self.results_table.setItem(row, 3, QTableWidgetItem("Queued"))
+        self.results_table.setItem(row, 2, QTableWidgetItem("Queued"))
+        self.results_table.setItem(row, 3, QTableWidgetItem(hit.url))
         self.results_table.setItem(row, 4, QTableWidgetItem(""))
+        self._apply_row_status_style(row, "Queued")
         self._row_for_source_url[hit.url] = row
+        self._scroll_results_to_latest()
 
     def _update_row_with_download(self, record: DownloadRecord) -> None:
         """Update the table row that corresponds to one download result."""
@@ -265,15 +289,69 @@ class MainWindow(QMainWindow):
                 QTableWidgetItem(record.provider_id.value),
             )
             self.results_table.setItem(row, 1, QTableWidgetItem(record.title))
-            self.results_table.setItem(row, 2, QTableWidgetItem(record.source_url))
-        self.results_table.setItem(row, 3, QTableWidgetItem(record.outcome.value))
+            self.results_table.setItem(row, 3, QTableWidgetItem(record.source_url))
+        status_text = self._status_text(record)
+        self.results_table.setItem(row, 2, QTableWidgetItem(status_text))
         self.results_table.setItem(
             row,
             4,
-            QTableWidgetItem(
-                str(record.output_path) if record.output_path else record.message
-            ),
+            QTableWidgetItem(self._output_text(record)),
         )
+        self._apply_row_status_style(row, status_text)
+        self._scroll_results_to_latest()
+
+    def _status_text(self, record: DownloadRecord) -> str:
+        """Return the user-facing status label for one result row."""
+
+        if record.outcome is DownloadOutcome.DOWNLOADED:
+            return "Downloaded"
+        if record.outcome is DownloadOutcome.SKIPPED:
+            return "Skipped Duplicate"
+        return "Failed"
+
+    def _output_text(self, record: DownloadRecord) -> str:
+        """Return the user-facing output/detail text for one result row."""
+
+        if (
+            record.outcome is DownloadOutcome.DOWNLOADED
+            and record.output_path is not None
+        ):
+            return f"Saved to {record.output_path}"
+        if record.outcome is DownloadOutcome.SKIPPED and record.output_path is not None:
+            return f"{record.message} Existing file: {record.output_path}"
+        return record.message
+
+    def fit_results_columns(self) -> None:
+        """Resize result columns to fit their current contents."""
+
+        self.results_table.resizeColumnsToContents()
+        self.results_table.horizontalHeader().setStretchLastSection(True)
+
+    def _scroll_results_to_latest(self) -> None:
+        """Keep the results table scrolled to the newest row."""
+
+        self.results_table.scrollToBottom()
+
+    def _apply_row_status_style(self, row: int, status_text: str) -> None:
+        """Apply a light status-based background color across one row."""
+
+        background = self._status_background(status_text)
+        for column in range(self.results_table.columnCount()):
+            item = self.results_table.item(row, column)
+            if item is not None:
+                item.setBackground(background)
+
+    def _status_background(self, status_text: str) -> QBrush:
+        """Return the light background brush for one status label."""
+
+        normalized_status = status_text.strip().lower()
+        if normalized_status == "downloaded":
+            return QBrush(QColor("#e6f6ea"))
+        if normalized_status == "skipped duplicate":
+            return QBrush(QColor("#fff7db"))
+        if normalized_status == "failed":
+            return QBrush(QColor("#fdeaea"))
+        return QBrush(QColor("#eef3ff"))
 
     def _set_running_state(self, running: bool) -> None:
         """Toggle the UI affordances for one worker run."""
@@ -357,6 +435,19 @@ class MainWindow(QMainWindow):
         ini_path.touch(exist_ok=True)
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(ini_path)))
 
+    def clear_manifest(self) -> None:
+        """Clear the persisted duplicate-manifest records after confirmation."""
+
+        answer = QMessageBox.question(
+            self,
+            "Clear Manifest",
+            "Clear all manifest entries? Existing downloaded files will be kept.",
+        )
+        if answer is not QMessageBox.StandardButton.Yes:
+            return
+        ManifestStore(manifest_database_path()).clear()
+        self.status_label.setText("Cleared manifest entries.")
+
     def _on_manual_intervention(
         self,
         provider_id: str,
@@ -388,10 +479,30 @@ class MainWindow(QMainWindow):
             return
         self.status_label.setText(state.last_message or "Run failed.")
 
+    def _restore_window_geometry(self) -> None:
+        """Restore the last saved main-window geometry when available."""
+
+        raw_geometry = QSettings().value(_WINDOW_GEOMETRY_KEY)
+        if isinstance(raw_geometry, QByteArray):
+            self._has_saved_geometry = self.restoreGeometry(raw_geometry)
+
+    def _save_window_geometry(self) -> None:
+        """Persist the current main-window geometry."""
+
+        settings = QSettings()
+        settings.setValue(_WINDOW_GEOMETRY_KEY, self.saveGeometry())
+        settings.sync()
+
+    def has_saved_window_geometry(self) -> bool:
+        """Return whether the window restored a previously saved geometry."""
+
+        return self._has_saved_geometry
+
     def closeEvent(self, event: QCloseEvent) -> None:
         """Gracefully stop the worker when the window closes."""
 
         if self._worker is not None and self._worker.isRunning():
             self._worker.requestInterruption()
             self._worker.wait(2_000)
+        self._save_window_geometry()
         super().closeEvent(event)

@@ -112,6 +112,34 @@ def test_google_provider_collect_hits_unwraps_redirect_links() -> None:
     ]
 
 
+def test_google_provider_collect_hits_skips_youtube_links() -> None:
+    html = """
+    <html><body>
+      <a href="https://www.youtube.com/watch?v=abc123">Naive Bayes lecture</a>
+      <a href="https://example.com/report.pdf">Comune report PDF</a>
+    </body></html>
+    """
+
+    hits = GoogleProvider().collect_hits(
+        html,
+        "https://www.google.com/search?q=test",
+        page_number=0,
+        max_results=10,
+    )
+
+    assert hits == [
+        SearchHit(
+            provider_id=ProviderId.GOOGLE,
+            title="Comune report PDF",
+            url="https://example.com/report.pdf",
+            display_url="example.com",
+            snippet="",
+            rank=1,
+            page_number=0,
+        )
+    ]
+
+
 def test_provider_resolve_pdf_candidate_finds_one_hop_pdf() -> None:
     hit = SearchHit(
         provider_id=ProviderId.GOOGLE,

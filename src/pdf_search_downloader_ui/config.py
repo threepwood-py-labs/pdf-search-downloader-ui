@@ -36,6 +36,7 @@ class DownloadConfig:
 
     output_dir: Path
     skip_duplicates: bool
+    timeout_seconds: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,6 +111,7 @@ def get_default_config() -> AppConfig:
         downloads=DownloadConfig(
             output_dir=default_output_dir(),
             skip_duplicates=True,
+            timeout_seconds=20,
         ),
         browser=BrowserConfig(profile_dir=default_profile_dir()),
         setup_completed=False,
@@ -131,6 +133,11 @@ def _schema(defaults: AppConfig) -> tuple[tuple[str, type[object], object], ...]
             "config/downloads/skip_duplicates",
             bool,
             defaults.downloads.skip_duplicates,
+        ),
+        (
+            "config/downloads/timeout_seconds",
+            int,
+            defaults.downloads.timeout_seconds,
         ),
         ("config/browser/profile_dir", str, str(defaults.browser.profile_dir)),
         ("prefs/setup_completed", bool, defaults.setup_completed),
@@ -240,6 +247,15 @@ def load_config() -> AppConfig:
                 "config/downloads/skip_duplicates",
                 defaults.downloads.skip_duplicates,
             ),
+            timeout_seconds=_clamp_int(
+                store.value(
+                    "config/downloads/timeout_seconds",
+                    defaults.downloads.timeout_seconds,
+                ),
+                5,
+                120,
+                defaults.downloads.timeout_seconds,
+            ),
         ),
         browser=BrowserConfig(
             profile_dir=Path(
@@ -272,6 +288,10 @@ def save_config(config: AppConfig) -> None:
     store.set_value(
         "config/downloads/skip_duplicates",
         config.downloads.skip_duplicates,
+    )
+    store.set_value(
+        "config/downloads/timeout_seconds",
+        config.downloads.timeout_seconds,
     )
     store.set_value("config/browser/profile_dir", str(config.browser.profile_dir))
     store.set_value("prefs/setup_completed", config.setup_completed)

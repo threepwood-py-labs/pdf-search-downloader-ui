@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
@@ -17,7 +18,9 @@ from ..browser_session import (
 from ..config import AppConfig
 from ..html_tools import looks_like_pdf_url
 from ..models import (
+    BrowserPageSnapshot,
     DownloadOutcome,
+    ManualInterventionReason,
     PdfCandidate,
     RunState,
     RunStatus,
@@ -49,6 +52,9 @@ def _default_browser_factory(config: AppConfig) -> BrowserSessionProtocol:
 
 class SearchRunWorker(QThread):
     """Run the bulk search and download workflow in the background."""
+
+    _blocked_retry_timeout_seconds = 5.0
+    _blocked_retry_poll_interval_seconds = 0.5
 
     progress_changed = Signal(str)
     hit_discovered = Signal(object)
@@ -99,6 +105,14 @@ class SearchRunWorker(QThread):
         while snapshot.intervention_reason is not None:
             state.status = RunStatus.WAITING
             state.interventions.append(snapshot.intervention_reason)
+            if snapshot.intervention_reason is ManualInterventionReason.BLOCKED:
+                snapshot = self._wait_for_blocked_page_recovery(
+                    browser_session,
+                    requested_url=url,
+                    snapshot=snapshot,
+                    provider=provider,
+                )
+                continue
             logger.info(
                 "Manual intervention required provider=%s reason=%s url=%s",
                 provider.provider_id.value,
@@ -131,6 +145,46 @@ class SearchRunWorker(QThread):
         )
         state.status = RunStatus.RUNNING
         return snapshot.html
+
+    def _wait_for_blocked_page_recovery(
+        self,
+        browser_session: BrowserSessionProtocol,
+        *,
+        requested_url: str,
+        snapshot: BrowserPageSnapshot,
+        provider: SearchProvider,
+    ) -> BrowserPageSnapshot:
+        """Wait briefly for one blocked page to recover before skipping it."""
+
+        logger.info(
+            "Blocked page detected provider=%s url=%s final_url=%s",
+            provider.provider_id.value,
+            requested_url,
+            snapshot.final_url,
+        )
+        self.progress_changed.emit(
+            f"{provider.display_name} looks blocked. Waiting briefly before skipping."
+        )
+        deadline = time.monotonic() + self._blocked_retry_timeout_seconds
+        latest_snapshot = snapshot
+        while time.monotonic() < deadline:
+            if self._cancelled():
+                raise RuntimeError(
+                    "Search run cancelled while waiting for a blocked page."
+                )
+            time.sleep(self._blocked_retry_poll_interval_seconds)
+            latest_snapshot = browser_session.current_snapshot()
+            if latest_snapshot.intervention_reason is None:
+                logger.info(
+                    "Blocked page cleared provider=%s final_url=%s",
+                    provider.provider_id.value,
+                    latest_snapshot.final_url,
+                )
+                return latest_snapshot
+        raise BrowserNavigationError(
+            requested_url,
+            "Page remained blocked after a short recovery wait.",
+        )
 
     def _resolve_candidate_for_hit(
         self,
@@ -178,7 +232,11 @@ class SearchRunWorker(QThread):
         state = RunState(status=RunStatus.RUNNING)
         provider_map = build_provider_map()
         manifest_store = ManifestStore(manifest_database_path())
-        downloader = PdfDownloader(manifest_store, temp_dir=temp_download_dir())
+        downloader = PdfDownloader(
+            manifest_store,
+            temp_dir=temp_download_dir(),
+            timeout_seconds=self._config.downloads.timeout_seconds,
+        )
         browser_session = self._browser_factory(self._config)
         self._browser_session = browser_session
         downloads_seen = 0
@@ -259,6 +317,9 @@ class SearchRunWorker(QThread):
                             )
                             continue
 
+                        self.progress_changed.emit(
+                            f"Downloading PDF for {hit.title}."
+                        )
                         record = downloader.download_candidate(
                             hit,
                             candidate,
@@ -270,10 +331,21 @@ class SearchRunWorker(QThread):
                         downloads_seen += 1
                         if record.outcome is DownloadOutcome.DOWNLOADED:
                             state.downloads_completed += 1
+                            self.progress_changed.emit(
+                                f"Downloaded {record.output_path.name}."
+                                if record.output_path is not None
+                                else f"Downloaded {hit.title}."
+                            )
                         elif record.outcome is DownloadOutcome.SKIPPED:
                             state.duplicates_skipped += 1
+                            self.progress_changed.emit(
+                                f"Skipped duplicate for {hit.title}."
+                            )
                         else:
                             state.failures += 1
+                            self.progress_changed.emit(
+                                f"Failed to download {hit.title}."
+                            )
                         logger.info(
                             "Download outcome provider=%s "
                             "source_url=%s outcome=%s final_url=%s",

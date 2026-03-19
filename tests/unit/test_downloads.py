@@ -49,6 +49,26 @@ def test_manifest_roundtrip(tmp_path: Path) -> None:
     assert loaded == record
 
 
+def test_manifest_clear_removes_all_records(tmp_path: Path) -> None:
+    store = ManifestStore(tmp_path / "manifest.sqlite3")
+    record = DownloadRecord(
+        provider_id=ProviderId.GOOGLE,
+        title="Comune report",
+        source_url="https://example.com/result",
+        final_url="https://example.com/report.pdf",
+        output_path=tmp_path / "report.pdf",
+        outcome=DownloadOutcome.DOWNLOADED,
+        sha256_hex="abc123",
+        file_size_bytes=1024,
+        message="ok",
+    )
+
+    store.record_download(record)
+    store.clear()
+
+    assert store.find_existing(record.source_url, record.final_url) is None
+
+
 def test_pdf_downloader_skips_duplicate_manifest_entries(tmp_path: Path) -> None:
     store = ManifestStore(tmp_path / "manifest.sqlite3")
     existing_output = tmp_path / "report.pdf"
@@ -92,6 +112,7 @@ def test_pdf_downloader_skips_duplicate_manifest_entries(tmp_path: Path) -> None
 
     assert result.outcome is DownloadOutcome.SKIPPED
     assert result.output_path == existing_output
+    assert "Skipped duplicate" in result.message
 
 
 def test_pdf_downloader_returns_failed_record_when_browser_fallback_errors(
@@ -241,3 +262,53 @@ def test_pdf_downloader_http_download_uses_browser_like_request_state(
     assert fake_client.recorded_cookies == {"sessionid": "abc123"}
     assert final_url == "https://example.com/report.pdf"
     assert temp_path.read_bytes().startswith(b"%PDF-")
+
+
+def test_pdf_downloader_prefers_final_url_filename_for_saved_output(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    store = ManifestStore(tmp_path / "manifest.sqlite3")
+    downloader = PdfDownloader(store, temp_dir=tmp_path / "temp")
+    hit = SearchHit(
+        provider_id=ProviderId.GOOGLE,
+        title="Percezione Attiva",
+        url="https://example.com/result",
+        display_url="example.com",
+        snippet="",
+        rank=1,
+        page_number=0,
+    )
+    candidate = PdfCandidate(
+        source_url=hit.url,
+        download_url="https://example.com/files/lezione_d.iii_2008_-_neurocontrollori.pdf",
+        filename_hint=hit.title,
+    )
+    temp_file = tmp_path / "temp" / "candidate.pdf"
+    temp_file.parent.mkdir(parents=True, exist_ok=True)
+    temp_file.write_bytes(b"%PDF-1.7 sample")
+
+    def fake_http_download(
+        candidate: PdfCandidate,
+        *,
+        browser_session=None,
+    ) -> tuple[Path, str]:
+        del candidate, browser_session
+        return temp_file, (
+            "https://example.com/files/lezione_d.iii_2008_-_neurocontrollori.pdf"
+        )
+
+    monkeypatch.setattr(downloader, "_download_via_http", fake_http_download)
+
+    record = downloader.download_candidate(
+        hit,
+        candidate,
+        output_dir=tmp_path / "downloads",
+        skip_duplicates=False,
+    )
+    downloader.close()
+
+    assert record.outcome is DownloadOutcome.DOWNLOADED
+    assert record.output_path is not None
+    assert record.output_path.name == "lezione_d.iii_2008_-_neurocontrollori.pdf"
+    assert "Downloaded PDF successfully to" in record.message

@@ -69,6 +69,10 @@ class SetupWizardDialog(QDialog):
         self.spn_results.setValue(initial.search.max_results)
         self.chk_skip_duplicates = QCheckBox("Skip duplicates using manifest")
         self.chk_skip_duplicates.setChecked(initial.downloads.skip_duplicates)
+        self.spn_download_timeout = QSpinBox()
+        self.spn_download_timeout.setRange(5, 120)
+        self.spn_download_timeout.setSuffix(" sec")
+        self.spn_download_timeout.setValue(initial.downloads.timeout_seconds)
 
         self.txt_output_dir = QLineEdit(str(initial.downloads.output_dir))
         self.btn_browse_output = QPushButton("Browse...")
@@ -89,6 +93,7 @@ class SetupWizardDialog(QDialog):
         form.addRow("Default locale", self.cmb_locale)
         form.addRow("Max pages", self.spn_pages)
         form.addRow("Max results", self.spn_results)
+        form.addRow("Download timeout", self.spn_download_timeout)
         form.addRow("Output directory", output_row)
         form.addRow("Browser profile directory", profile_row)
         form.addRow("Duplicates", self.chk_skip_duplicates)
@@ -184,6 +189,7 @@ class SetupWizardDialog(QDialog):
             downloads=DownloadConfig(
                 output_dir=Path(self.txt_output_dir.text().strip()),
                 skip_duplicates=self.chk_skip_duplicates.isChecked(),
+                timeout_seconds=int(self.spn_download_timeout.value()),
             ),
             browser=BrowserConfig(
                 profile_dir=Path(self.txt_profile_dir.text().strip())

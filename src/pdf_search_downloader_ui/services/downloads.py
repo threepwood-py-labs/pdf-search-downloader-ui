@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 import httpx
 
@@ -19,6 +20,7 @@ if TYPE_CHECKING:
     from ..persistence.manifest import ManifestStore
 
 _INVALID_FILENAME_CHARS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
+logger = logging.getLogger(__name__)
 
 
 def sanitize_filename(raw_title: str) -> str:
@@ -44,9 +46,14 @@ def _hash_text(text: str) -> str:
 def _target_filename(
     title: str,
     filename_hint: str,
+    final_url: str,
 ) -> str:
     """Build a deterministic output filename for one PDF candidate."""
 
+    final_url_name = Path(unquote(urlparse(final_url).path)).name
+    if final_url_name.lower().endswith(".pdf"):
+        base_name = sanitize_filename(Path(final_url_name).stem)
+        return f"{base_name}.pdf"
     hinted_name = Path(filename_hint).name if filename_hint else ""
     if hinted_name.lower().endswith(".pdf"):
         base_name = sanitize_filename(Path(hinted_name).stem)
@@ -63,7 +70,7 @@ class PdfDownloader:
         manifest_store: ManifestStore,
         *,
         temp_dir: Path,
-        timeout_seconds: float = 60.0,
+        timeout_seconds: float = 20.0,
     ) -> None:
         self._manifest_store = manifest_store
         self._temp_dir = temp_dir
@@ -97,6 +104,11 @@ class PdfDownloader:
             candidate.source_url
             if candidate.source_url != candidate.download_url
             else None
+        )
+        logger.info(
+            "Starting HTTP download candidate source_url=%s download_url=%s",
+            candidate.source_url,
+            candidate.download_url,
         )
         request_headers: dict[str, str] = {}
         request_cookies: dict[str, str] = {}
@@ -150,6 +162,11 @@ class PdfDownloader:
             if "pdf" not in content_type and not has_signature:
                 temp_path.unlink(missing_ok=True)
                 raise ValueError("Response did not contain PDF content.")
+            logger.info(
+                "HTTP download saved temp file download_url=%s temp_path=%s",
+                candidate.download_url,
+                temp_path,
+            )
             return temp_path, str(response.url)
 
     def _download_via_browser(
@@ -181,7 +198,11 @@ class PdfDownloader:
         """Resolve one unique output path for the downloaded file."""
 
         output_dir.mkdir(parents=True, exist_ok=True)
-        candidate_name = _target_filename(hit.title, candidate.filename_hint)
+        candidate_name = _target_filename(
+            hit.title,
+            candidate.filename_hint,
+            final_url,
+        )
         target_path = output_dir / candidate_name
         if not target_path.exists():
             return target_path
@@ -230,6 +251,11 @@ class PdfDownloader:
 
         existing = self._manifest_store.find_existing(hit.url, candidate.download_url)
         if skip_duplicates and existing is not None:
+            logger.info(
+                "Skipping duplicate candidate source_url=%s existing_output=%s",
+                hit.url,
+                existing.output_path,
+            )
             return DownloadRecord(
                 provider_id=hit.provider_id,
                 title=hit.title,
@@ -239,7 +265,7 @@ class PdfDownloader:
                 outcome=DownloadOutcome.SKIPPED,
                 sha256_hex=existing.sha256_hex,
                 file_size_bytes=existing.file_size_bytes,
-                message="Skipped duplicate candidate already stored in manifest.",
+                message="Skipped duplicate already stored in manifest.",
             )
 
         try:
@@ -295,7 +321,12 @@ class PdfDownloader:
             final_url,
             target_path,
             DownloadOutcome.DOWNLOADED,
-            "Downloaded PDF successfully.",
+            f"Downloaded PDF successfully to {target_path.name}.",
         )
         self._manifest_store.record_download(record)
+        logger.info(
+            "Recorded downloaded PDF source_url=%s output_path=%s",
+            hit.url,
+            target_path,
+        )
         return record

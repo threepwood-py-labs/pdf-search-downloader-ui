@@ -74,6 +74,7 @@ def test_load_and_save_config_roundtrip(monkeypatch, tmp_path: Path) -> None:
         downloads=DownloadConfig(
             output_dir=tmp_path / "downloads",
             skip_duplicates=False,
+            timeout_seconds=33,
         ),
         browser=BrowserConfig(profile_dir=tmp_path / "profile"),
         setup_completed=True,
@@ -86,6 +87,7 @@ def test_load_and_save_config_roundtrip(monkeypatch, tmp_path: Path) -> None:
     assert loaded.search.max_pages == 4
     assert loaded.search.max_results == 12
     assert loaded.downloads.output_dir == tmp_path / "downloads"
+    assert loaded.downloads.timeout_seconds == 33
     assert loaded.browser.profile_dir == tmp_path / "profile"
     assert loaded.setup_completed is True
 

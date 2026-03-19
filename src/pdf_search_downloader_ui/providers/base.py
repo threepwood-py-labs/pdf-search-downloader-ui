@@ -50,6 +50,7 @@ class ProviderBase(ABC):
     provider_id: ProviderId
     display_name: str
     _internal_domains: tuple[str, ...]
+    _blocked_domains: tuple[str, ...] = ("youtube.com", "www.youtube.com", "youtu.be")
 
     def _query_text(self, query: str) -> str:
         """Build the provider query text with the forced PDF filter."""
@@ -67,6 +68,12 @@ class ProviderBase(ABC):
 
         netloc = urlparse(url).netloc.lower()
         return any(domain in netloc for domain in self._internal_domains)
+
+    def _is_blocked_url(self, url: str) -> bool:
+        """Return whether one URL should never be opened as a hit."""
+
+        netloc = urlparse(url).netloc.lower()
+        return any(blocked_domain in netloc for blocked_domain in self._blocked_domains)
 
     def _normalize_result_url(self, url: str) -> str:
         """Normalize one provider result URL."""
@@ -90,6 +97,8 @@ class ProviderBase(ABC):
             if not normalized_url.startswith(("http://", "https://")):
                 continue
             if self._is_internal_url(normalized_url):
+                continue
+            if self._is_blocked_url(normalized_url):
                 continue
             title = " ".join(link.text.split())
             if not title and not looks_like_pdf_url(normalized_url):

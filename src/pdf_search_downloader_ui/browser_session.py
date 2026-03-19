@@ -696,22 +696,24 @@ class BrowserSessionManager(BrowserSessionProtocol):
 
         page = self._active_page()
         requested_url = self._last_snapshot.requested_url or str(page.url)
+        previous_snapshot = self._last_snapshot
         snapshot = self._capture_snapshot(page, requested_url=requested_url)
-        logger.info(
-            "Refreshed current snapshot final=%s title=%r intervention=%s",
-            snapshot.final_url,
-            snapshot.title,
-            snapshot.intervention_reason.value
-            if snapshot.intervention_reason is not None
-            else "none",
-        )
+        if snapshot != previous_snapshot:
+            logger.info(
+                "Refreshed current snapshot final=%s title=%r intervention=%s",
+                snapshot.final_url,
+                snapshot.title,
+                snapshot.intervention_reason.value
+                if snapshot.intervention_reason is not None
+                else "none",
+            )
         return snapshot
 
     def wait_for_resume(
         self,
         should_cancel: Callable[[], bool],
         *,
-        poll_interval_seconds: float = 0.1,
+        poll_interval_seconds: float = 0.5,
     ) -> bool:
         """Wait until the workflow is resumed or cancelled."""
 
