@@ -165,6 +165,17 @@ def test_provider_resolve_pdf_candidate_finds_one_hop_pdf() -> None:
 def test_detect_manual_intervention_flags_common_blockers() -> None:
     assert (
         detect_manual_intervention(
+            (
+                "<html><title>Just a moment...</title>"
+                "Cloudflare checking your browser before accessing the site."
+                "</html>"
+            ),
+            "https://example.com/challenge",
+        ).value
+        == "cloudflare"
+    )
+    assert (
+        detect_manual_intervention(
             "<html>Before you continue to Google Search</html>",
             "https://www.google.com",
         ).value
@@ -183,6 +194,40 @@ def test_detect_manual_intervention_flags_common_blockers() -> None:
             "https://www.bing.com",
         ).value
         == "consent"
+    )
+    assert (
+        detect_manual_intervention(
+            "<html>Please wait while your request is being verified.</html>",
+            "https://example.com/check",
+        ).value
+        == "interstitial"
+    )
+
+
+def test_detect_manual_intervention_ignores_sidebar_captcha_badges() -> None:
+    assert (
+        detect_manual_intervention(
+            (
+                "<html><aside>Questo sito e protetto da CAPTCHA.</aside>"
+                "<article>Contenuto normale</article></html>"
+            ),
+            "https://www.intelligenzaartificiale.it/agenti-intelligenti/",
+        )
+        is None
+    )
+
+
+def test_detect_manual_intervention_ignores_background_recaptcha_scripts() -> None:
+    assert (
+        detect_manual_intervention(
+            (
+                '<html><script src="https://www.google.com/recaptcha/api.js'
+                '?render=sitekey"></script>'
+                '<textarea class="g-recaptcha-response"></textarea></html>'
+            ),
+            "https://www.intelligenzaartificiale.it/agenti-intelligenti/",
+        )
+        is None
     )
 
 
@@ -355,6 +400,33 @@ def test_browser_session_fetch_snapshot_opens_a_fresh_tab(
     ]
     assert fake_context.created_pages[1].brought_to_front is True
     assert session._page is fake_context.created_pages[1]
+
+
+def test_browser_session_bring_to_front_uses_active_page(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    class FakePage:
+        """Provide the subset of the Playwright page interface used here."""
+
+        def __init__(self) -> None:
+            self.url = "https://example.com/challenge"
+            self.brought_to_front = False
+
+        def bring_to_front(self) -> None:
+            self.brought_to_front = True
+
+    session = BrowserSessionManager(
+        tmp_path / "profile",
+        locale="it",
+        browser_download_dir=tmp_path / "downloads",
+    )
+    fake_page = FakePage()
+    monkeypatch.setattr(session, "_active_page", lambda: fake_page)
+
+    session.bring_to_front()
+
+    assert fake_page.brought_to_front is True
 
 
 def test_browser_session_launches_persistent_context_with_stealth_settings(

@@ -22,6 +22,8 @@ class ManualInterventionReason(StrEnum):
 
     CAPTCHA = "captcha"
     CONSENT = "consent"
+    CLOUDFLARE = "cloudflare"
+    INTERSTITIAL = "interstitial"
     BLOCKED = "blocked"
 
 

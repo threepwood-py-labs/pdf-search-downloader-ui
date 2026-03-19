@@ -44,8 +44,7 @@ def test_setup_wizard_locale_combo_uses_common_defaults(qtbot) -> None:
     dialog = SetupWizardDialog(get_default_config())
     qtbot.addWidget(dialog)
     combo_items = [
-        dialog.cmb_locale.itemText(index)
-        for index in range(dialog.cmb_locale.count())
+        dialog.cmb_locale.itemText(index) for index in range(dialog.cmb_locale.count())
     ]
 
     assert dialog.cmb_locale.currentText() == "Italian"

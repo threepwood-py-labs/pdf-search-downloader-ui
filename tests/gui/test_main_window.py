@@ -125,6 +125,19 @@ def test_main_window_manual_intervention_enables_resume(window) -> None:
     assert "manual captcha" in window.status_label.text().lower()
 
 
+def test_main_window_cloudflare_message_is_clear(window) -> None:
+    window._on_manual_intervention(
+        "google",
+        "cloudflare",
+        "https://example.com/challenge",
+    )
+
+    assert window.resume_button.isEnabled() is True
+    assert window.status_label.text() == (
+        "Cloudflare verification detected; solve it in the browser, then press Resume."
+    )
+
+
 def test_main_window_locale_combo_uses_common_defaults(window) -> None:
     combo_items = [
         window.locale_combo.itemText(index)

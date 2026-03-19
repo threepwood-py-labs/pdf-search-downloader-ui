@@ -54,6 +54,11 @@ class _FakeBrowserSession:
         del should_cancel, poll_interval_seconds
         raise AssertionError("wait_for_resume should not be used for blocked pages")
 
+    def bring_to_front(self) -> None:
+        """Raise when a test forgets to stub browser foregrounding."""
+
+        raise AssertionError("bring_to_front should be stubbed in the test")
+
 
 def test_resolve_candidate_uses_pdf_like_url_without_fetching(monkeypatch) -> None:
     worker = SearchRunWorker(
@@ -251,3 +256,65 @@ def test_fetch_ready_html_recovers_when_blocked_page_clears(monkeypatch) -> None
     )
 
     assert html == "<html>ok</html>"
+
+
+def test_fetch_ready_html_brings_cloudflare_page_to_front_and_waits_for_resume(
+    monkeypatch,
+) -> None:
+    worker = SearchRunWorker(
+        get_default_config().build_request("naive bayes"),
+        get_default_config(),
+    )
+    provider = _FakeProvider()
+    cloudflare_snapshot = BrowserPageSnapshot(
+        requested_url="https://example.com/challenge",
+        final_url="https://example.com/challenge",
+        title="Just a moment...",
+        html="<html>Cloudflare</html>",
+        intervention_reason=ManualInterventionReason.CLOUDFLARE,
+    )
+    recovered_snapshot = BrowserPageSnapshot(
+        requested_url="https://example.com/challenge",
+        final_url="https://example.com/result",
+        title="Recovered",
+        html="<html>ok</html>",
+        intervention_reason=None,
+    )
+    browser_session = _FakeBrowserSession()
+    captured_progress: list[str] = []
+    captured_interventions: list[tuple[str, str, str]] = []
+    was_brought_to_front = False
+
+    monkeypatch.setattr(
+        browser_session,
+        "fetch_snapshot",
+        lambda _url: cloudflare_snapshot,
+    )
+    monkeypatch.setattr(browser_session, "current_snapshot", lambda: recovered_snapshot)
+
+    def fake_bring_to_front() -> None:
+        nonlocal was_brought_to_front
+        was_brought_to_front = True
+
+    monkeypatch.setattr(browser_session, "bring_to_front", fake_bring_to_front)
+    monkeypatch.setattr(browser_session, "wait_for_resume", lambda _cancel: True)
+    worker.progress_changed.connect(captured_progress.append)
+    worker.manual_intervention_required.connect(
+        lambda provider_id, reason, url: captured_interventions.append(
+            (provider_id, reason, url)
+        )
+    )
+
+    html = worker._fetch_ready_html(
+        browser_session,
+        "https://example.com/challenge",
+        provider,
+        RunState(),
+    )
+
+    assert html == "<html>ok</html>"
+    assert was_brought_to_front is True
+    assert captured_interventions == [
+        ("google", "cloudflare", "https://example.com/challenge")
+    ]
+    assert "Cloudflare verification detected" in captured_progress[0]

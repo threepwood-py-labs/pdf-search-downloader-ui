@@ -113,6 +113,7 @@ class SearchRunWorker(QThread):
                     provider=provider,
                 )
                 continue
+            browser_session.bring_to_front()
             logger.info(
                 "Manual intervention required provider=%s reason=%s url=%s",
                 provider.provider_id.value,
@@ -120,9 +121,10 @@ class SearchRunWorker(QThread):
                 snapshot.final_url,
             )
             self.progress_changed.emit(
-                "Solve the "
-                f"{snapshot.intervention_reason.value} step in the "
-                f"{provider.display_name} browser window."
+                self._manual_intervention_progress_message(
+                    provider,
+                    snapshot.intervention_reason,
+                )
             )
             self.manual_intervention_required.emit(
                 provider.provider_id.value,
@@ -145,6 +147,30 @@ class SearchRunWorker(QThread):
         )
         state.status = RunStatus.RUNNING
         return snapshot.html
+
+    def _manual_intervention_progress_message(
+        self,
+        provider: SearchProvider,
+        reason: ManualInterventionReason,
+    ) -> str:
+        """Build the status text shown while manual browser action is required."""
+
+        if reason is ManualInterventionReason.CLOUDFLARE:
+            return (
+                f"Cloudflare verification detected in the "
+                f"{provider.display_name} browser window. Solve it there, then "
+                "press Resume."
+            )
+        if reason is ManualInterventionReason.INTERSTITIAL:
+            return (
+                f"A browser interstitial is waiting in the "
+                f"{provider.display_name} browser window. Complete it there, then "
+                "press Resume."
+            )
+        return (
+            f"Solve the {reason.value} step in the "
+            f"{provider.display_name} browser window, then press Resume."
+        )
 
     def _wait_for_blocked_page_recovery(
         self,
@@ -317,9 +343,7 @@ class SearchRunWorker(QThread):
                             )
                             continue
 
-                        self.progress_changed.emit(
-                            f"Downloading PDF for {hit.title}."
-                        )
+                        self.progress_changed.emit(f"Downloading PDF for {hit.title}.")
                         record = downloader.download_candidate(
                             hit,
                             candidate,

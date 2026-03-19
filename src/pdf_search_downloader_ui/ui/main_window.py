@@ -458,9 +458,32 @@ class MainWindow(QMainWindow):
 
         self.resume_button.setEnabled(True)
         self.status_label.setText(
-            f"{provider_id.title()} requires manual {reason} handling in the browser."
+            self._manual_intervention_status_text(provider_id, reason)
         )
         self.statusBar().showMessage(page_url)
+
+    def _manual_intervention_status_text(
+        self,
+        provider_id: str,
+        reason: str,
+    ) -> str:
+        """Build the visible main-window status text for one intervention."""
+
+        normalized_reason = reason.strip().lower()
+        if normalized_reason == "cloudflare":
+            return (
+                "Cloudflare verification detected; solve it in the browser, then "
+                "press Resume."
+            )
+        if normalized_reason == "interstitial":
+            return (
+                "Browser interstitial detected; complete it in the browser, then "
+                "press Resume."
+            )
+        return (
+            f"{provider_id.title()} requires manual {normalized_reason} handling "
+            "in the browser, then press Resume."
+        )
 
     def _on_run_finished(self, state: RunState) -> None:
         """Handle worker completion."""

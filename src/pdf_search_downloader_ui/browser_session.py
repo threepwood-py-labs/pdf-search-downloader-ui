@@ -89,6 +89,11 @@ class BrowserSessionProtocol(Protocol):
 
         ...
 
+    def bring_to_front(self) -> None:
+        """Bring the active browser page to the foreground."""
+
+        ...
+
     def download_file(self, url: str, destination_dir: Path) -> Path | None:
         """Attempt to capture a browser-managed download."""
 
@@ -132,15 +137,32 @@ def detect_manual_intervention(
     netloc = parsed_url.netloc.lower()
     path = parsed_url.path.lower()
     text = f"{final_url}\n{html}".lower()
-    if (
-        "/sorry/" in path
-        or "captcha" in text
-        or "unusual traffic" in text
-        or "verify you're human" in text
-        or "verify you are human" in text
-        or "human verification" in text
-        or "not a robot" in text
+    cloudflare_markers = (
+        "__cf_chl",
+        "cf-chl-",
+        "challenges.cloudflare.com",
+        "checking your browser before accessing",
+        "enable javascript and cookies to continue",
+    )
+    if "cloudflare" in text and (
+        "just a moment" in text or any(marker in text for marker in cloudflare_markers)
     ):
+        return ManualInterventionReason.CLOUDFLARE
+    captcha_markers = (
+        "unusual traffic",
+        "verify you're human",
+        "verify you are human",
+        "human verification",
+        "not a robot",
+        "i'm not a robot",
+        "i am not a robot",
+        "enter the characters you see below",
+        "solve the captcha",
+        "complete the captcha",
+        "hcaptcha",
+        "cf-turnstile",
+    )
+    if "/sorry/" in path or any(marker in text for marker in captcha_markers):
         return ManualInterventionReason.CAPTCHA
     if (
         netloc.startswith("consent.")
@@ -151,6 +173,12 @@ def detect_manual_intervention(
         or "one last step" in text
     ):
         return ManualInterventionReason.CONSENT
+    if (
+        "checking if the site connection is secure" in text
+        or "please wait while your request is being verified" in text
+        or "review the security of your connection before proceeding" in text
+    ):
+        return ManualInterventionReason.INTERSTITIAL
     if "access denied" in text or "blocked" in text:
         return ManualInterventionReason.BLOCKED
     return None
@@ -598,6 +626,13 @@ class BrowserSessionManager(BrowserSessionProtocol):
         self._page = self._context.new_page()
         self._page.bring_to_front()
         return self._page
+
+    def bring_to_front(self) -> None:
+        """Bring the current browser page to the foreground."""
+
+        page = self._active_page()
+        page.bring_to_front()
+        logger.info("Brought browser page to the foreground url=%s", page.url)
 
     def _wait_for_page_settle(self, page: Page) -> None:
         """Give one page a short chance to finish its current navigation."""
