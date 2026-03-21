@@ -56,6 +56,7 @@ dependencies = [
 [tool.hatch.envs.default.scripts]
 test = "pytest {args:tests}"
 test-cov = "pytest --cov=src/pdf_search_downloader_ui --cov-report=term-missing --cov-report=xml {args:tests}"
+package-standalone = "python scripts/windows/build_nuitka.py {args}"
 
 [tool.hatch.envs.lint]
 dependencies = [
@@ -96,6 +97,15 @@ python = ["3.13"]
 
 [tool.hatch.envs.test.scripts]
 run = "pytest {args:tests}"
+
+[tool.hatch.envs.package]
+dependencies = [
+  "Nuitka>=4.0.6",
+  "zstandard>=0.25.0",
+]
+
+[tool.hatch.envs.package.scripts]
+standalone = "python scripts/windows/build_nuitka.py {args}"
 
 [tool.ruff]
 target-version = "py313"
@@ -216,3 +226,12 @@ omit = ["tests/*"]
 fail_under = 80
 show_missing = true
 skip_covered = false
+
+[tool.workspace.nuitka]
+app_package = "pdf_search_downloader_ui"
+output_name = "pdf-search-downloader-ui"
+mode = "standalone"
+windows_console_mode = "disable"
+enable_plugins = ["pyside6"]
+include_qt_plugins = []
+include_data_files = []
