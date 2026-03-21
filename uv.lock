@@ -119,7 +119,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "playwright", specifier = ">=1.55.0" },
     { name = "pyside6", specifier = ">=6.10.2" },
-    { name = "threep-commons", git = "https://github.com/Threepwood-7/threep-commons?rev=v0.3.0" },
+    { name = "threep-commons", git = "https://github.com/Threepwood-7/threep-commons?rev=v0.3.1" },
 ]
 
 [[package]]
@@ -215,8 +215,8 @@ wheels = [
 
 [[package]]
 name = "threep-commons"
-version = "0.3.0"
-source = { git = "https://github.com/Threepwood-7/threep-commons?rev=v0.3.0#8b44b52332bf4caeb064b4e8a6c0d73014eeefab" }
+version = "0.3.1"
+source = { git = "https://github.com/Threepwood-7/threep-commons?rev=v0.3.1#4cd5db771b70ea06d43b3b4db68d15d462b6880d" }
 dependencies = [
     { name = "pyside6" },
 ]
