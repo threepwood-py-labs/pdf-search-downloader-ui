@@ -1,5 +1,5 @@
 # Changes here will be overwritten by Copier.
-_src_path: "aatemplate"
+_src_path: "_py_template"
 _commit: "v1.7.4"
 project_name: "pdf-search-downloader-ui"
 project_kind: "qt_app"
@@ -16,4 +16,3 @@ runtime_dependencies:
   - "httpx>=0.28.1"
 
   - "playwright>=1.55.0"
-
