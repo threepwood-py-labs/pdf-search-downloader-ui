@@ -1,13 +1,13 @@
 # Changes here will be overwritten by Copier.
 _src_path: "../_py_template"
-_commit: "v1.7.4-5-g20ebebe"
+_commit: "v1.7.4-7-g4bc5d2f"
 project_name: "pdf-search-downloader-ui"
 project_kind: "qt_app"
 package_name: "pdf_search_downloader_ui"
 description: "Windows desktop application for browser-driven PDF search and download workflows."
 author_name: "MT0z"
 author_email: "mt0z1@pir0z.yxz"
-github_username: "Threepwood-7"
+github_username: "threepwood-py-labs"
 project_version: "0.1.0"
 runtime_dependencies:
 
