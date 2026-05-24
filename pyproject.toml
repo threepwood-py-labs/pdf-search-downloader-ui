@@ -27,6 +27,8 @@ dependencies = [
 
   "playwright>=1.55.0",
 
+  "PyMuPDF>=1.27.0",
+
 ]
 
 [project.urls]
