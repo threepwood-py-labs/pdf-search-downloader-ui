@@ -293,8 +293,7 @@ def _fetch_ready_html_auto(
     while snapshot.intervention_reason is not None:
         reason = snapshot.intervention_reason
         message = (
-            f"INTERVENTION {provider.display_name} {reason.value}: "
-            f"{snapshot.final_url}"
+            f"INTERVENTION {provider.display_name} {reason.value}: {snapshot.final_url}"
         )
         print(
             message,

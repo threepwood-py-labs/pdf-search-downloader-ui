@@ -11,10 +11,8 @@ if TYPE_CHECKING:
 TEST_DEPENDENCIES = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
-
     "pytest-qt>=4.4",
     "PySide6>=6.10.2",
-
 ]
 
 PACKAGE_DEPENDENCIES = [
@@ -115,10 +113,8 @@ def ensure_test_dependencies(repo_root: Path) -> int:
         module_names=[
             "pytest",
             "pytest_cov",
-
             "pytestqt",
             "PySide6",
-
         ],
         description="test",
     )
